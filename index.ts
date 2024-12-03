@@ -176,8 +176,59 @@ async function compareDetailedDataWithXml() {
     compareJsonObjects(detailedData, xmlData);
 }
 
+function jsonToCsv(jsonData: string) {
+    const data = JSON.parse(jsonData);
+    const originalIds = Object.keys(data); // Obtener todos los IDs originales
+    const items = Object.values(data).map((entry: any) => entry.item);
+
+    if (items.length === 0) {
+        throw new Error("El JSON está vacío. No hay datos para convertir a CSV.");
+    }
+
+    const header = Object.keys(items[0]);
+    console.log(`Encabezados: ${header.join(', ')}`); // Verificar encabezados
+
+    const processedIds: string[] = [];
+    const csv = [
+        header.join(','), // Encabezados
+        ...items.map((row: any) => {
+            processedIds.push(row.id.toString()); // Almacenar IDs procesados
+            return header.map((fieldName: any) => JSON.stringify(row[fieldName], replacer)).join(',');
+        })
+    ].join('\r\n');
+
+    // Verificar si todos los IDs han sido procesados
+    const missingIds = originalIds.filter(id => !processedIds.includes(id));
+    if (missingIds.length > 0) {
+        console.warn(`IDs faltantes: ${missingIds.join(', ')}`);
+    } else {
+        console.log("Todos los IDs han sido procesados correctamente.");
+    }
+
+    return csv;
+}
+
+function replacer(key: any, value: any) {
+    return value === null ? '' : value;
+}
+
+function convertJsonFileToCsv(inputFilePath: string, outputFilePath: string) {
+    const jsonData = fs.readFileSync(inputFilePath, 'utf-8');
+    const csvData = jsonToCsv(jsonData);
+    fs.writeFileSync(outputFilePath, csvData);
+    console.log(`Datos convertidos y guardados en ${outputFilePath}`);
+}
+
+// Ruta de los archivos
+const inputFilePath = path.join(__dirname, 'projectblogs', 'detailedData.json');
+const outputFilePath = path.join(__dirname, 'projectblogs', 'detailedData.csv');
+
+// Convertir y guardar
+convertJsonFileToCsv(inputFilePath, outputFilePath);
+
+
 // fetchAndSaveData();
 
 // processAndSaveDetailedData();
 
-compareDetailedDataWithXml().catch(error => console.error('Error:', error));
+// compareDetailedDataWithXml().catch(error => console.error('Error:', error));
