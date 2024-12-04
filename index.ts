@@ -10,7 +10,7 @@ const endpoints = {
 async function fetchAndSaveData() {
     try {
         for (const [folderName, endpoint] of Object.entries(endpoints)) {
-            const response = await fetch(env.BASE_URL + endpoint, {
+            const response = await fetch(`${env.BASE_URL}${endpoint}?limit=4000`, {
                 method: 'GET',
                 headers: {
                     'Authorization': 'Basic ' + btoa(`${env.USER_EMAIL}:${env.API_KEY}`),
@@ -54,6 +54,7 @@ function getIdsFromDataFile(filePath: string): number[] {
     const idsFilePath = path.join(path.dirname(filePath), 'ids.json');
     fs.writeFileSync(idsFilePath, JSON.stringify(ids, null, 2));
     console.log(`IDs guardados exitosamente en ${idsFilePath}`);
+    console.log(ids);
 
     return ids;
 }
@@ -73,56 +74,80 @@ async function fetchDetailedDataById(id: number): Promise<any> {
         throw new Error(`Error fetching data for ID ${id}: ${response.statusText}`);
     }
 
+    // Obtener el límite de llamadas desde el encabezado
+    const apiCallLimit = response.headers.get('Http-X-Solve360-Api-Call-Limit');
+    if (apiCallLimit) {
+        console.log(`Límite de llamadas API: ${apiCallLimit}`);
+    }
+
     return response.json();
 }
 
 // Función principal para procesar los IDs y guardar los datos detallados
 async function processAndSaveDetailedData() {
-    const dataFilePath = path.join(__dirname, 'projectblogs', 'detailedData.json');
+    const resultFilePath = path.join(__dirname, 'projectblogs', 'detailedData.json');
     const stateFilePath = path.join(__dirname, 'projectblogs', 'state.json');
-    const ids = [
-        220133598, 223079677, 224091288, 224119556, 225621775, 227028298, 227028303, 227028308,
-        228522687, 228663207, 228878681, 228878708, 229927653, 230641703, 231388386, 231388393,
-        231388401, 233449443, 234742015, 234742105, 236295121, 236299952, 236471383, 237479048,
-        237479076, 237479098, 237479156, 237479159, 238175526, 239014910, 245253864, 247123282,
-        248198328, 249006697, 249261791, 253186930, 254686977, 255710304, 256400305, 258888591,
-        259448166, 264787710, 272619519, 280074612, 282014743, 283361664, 286968034, 292057791,
-        292381873, 293730131
-    ];
+    const failedIdsFilePath = path.join(__dirname, 'projectblogs', 'failedIds.json');
+    const dataFilePath = path.join(__dirname, 'projectblogs', 'data.json');
+    const ids = getIdsFromDataFile(dataFilePath);
 
-    // Cargar el estado anterior si existe
     let startIndex = 0;
     if (fs.existsSync(stateFilePath)) {
         const state = JSON.parse(fs.readFileSync(stateFilePath, 'utf-8'));
         startIndex = state.lastProcessedIndex || 0;
     }
 
-    // Cargar datos existentes si el archivo ya existe
     let detailedData: Record<number, any> = {};
-    if (fs.existsSync(dataFilePath)) {
-        detailedData = JSON.parse(fs.readFileSync(dataFilePath, 'utf-8'));
+    if (fs.existsSync(resultFilePath)) {
+        detailedData = JSON.parse(fs.readFileSync(resultFilePath, 'utf-8'));
     }
 
-    for (let i = startIndex; i < ids.length; i++) {
-        const id = ids[i];
-        try {
-            const data = await fetchDetailedDataById(id);
-            detailedData[id] = data;
+    const maxConcurrentRequests = 10;
+    let currentIndex = startIndex;
+    const failedIds: number[] = [];
 
-            // Guardar el progreso
-            fs.writeFileSync(dataFilePath, JSON.stringify(detailedData, null, 2));
-            fs.writeFileSync(stateFilePath, JSON.stringify({ lastProcessedIndex: i + 1 }, null, 2));
+    async function fetchBatch() {
+        const batch = ids.slice(currentIndex, currentIndex + maxConcurrentRequests);
+        const promises = batch.map(async (id) => {
+            let retries = 3;
+            while (retries > 0) {
+                try {
+                    const data = await fetchDetailedDataById(id);
+                    detailedData[id] = data;
+                    console.log(`Datos detallados guardados para ID ${id}`);
+                    break;
+                } catch (error) {
+                    console.error(`Error al obtener datos detallados para ID ${id}:`, error);
+                    retries--;
+                    if (retries > 0) {
+                        console.log(`Reintentando ID ${id}, intentos restantes: ${retries}`);
+                        await new Promise(res => setTimeout(res, 2000 * (3 - retries)));
+                    } else {
+                        failedIds.push(id); // Agregar ID a la lista de fallidos
+                    }
+                }
+            }
+        });
 
-            console.log(`Datos detallados guardados para ID ${id}`);
-        } catch (error) {
-            console.error(`Error al obtener datos detallados para ID ${id}:`, error);
-            break; // Detener el proceso si hay un error
-        }
+        await Promise.all(promises);
+
+        currentIndex += maxConcurrentRequests;
+        fs.writeFileSync(resultFilePath, JSON.stringify(detailedData, null, 2));
+        fs.writeFileSync(stateFilePath, JSON.stringify({ lastProcessedIndex: currentIndex }, null, 2));
     }
 
-    // Eliminar el archivo de estado si se completó todo
+    while (currentIndex < ids.length) {
+        await fetchBatch();
+    }
+
     if (fs.existsSync(stateFilePath)) {
         fs.unlinkSync(stateFilePath);
+    }
+
+    // Guardar los IDs fallidos
+    if (failedIds.length > 0) {
+        fs.writeFileSync(failedIdsFilePath, JSON.stringify(failedIds, null, 2));
+        console.log(`IDs fallidos guardados en ${failedIdsFilePath}`);
     }
 }
 
@@ -176,34 +201,37 @@ async function compareDetailedDataWithXml() {
     compareJsonObjects(detailedData, xmlData);
 }
 
+const jsonToCsvEquivalences: Record<string, string> = {
+    "ID": "id",
+    "Nom du projet": "title",
+    "Date de creation": "custom11536902",
+    "Type de Projet": "custom11546881",
+    "Sous type": "custom11536909",
+    "Description": "description",
+    "Assigned To": "assignedto_cn",
+    // Añade más equivalencias según sea necesario
+};
+
 function jsonToCsv(jsonData: string) {
     const data = JSON.parse(jsonData);
-    const originalIds = Object.keys(data); // Obtener todos los IDs originales
-    const items = Object.values(data).map((entry: any) => entry.item);
+    const originalIds = Object.keys(data);
 
-    if (items.length === 0) {
-        throw new Error("El JSON está vacío. No hay datos para convertir a CSV.");
-    }
+    const header = Object.keys(jsonToCsvEquivalences);
 
-    const header = Object.keys(items[0]);
-    console.log(`Encabezados: ${header.join(', ')}`); // Verificar encabezados
-
-    const processedIds: string[] = [];
     const csv = [
         header.join(','), // Encabezados
-        ...items.map((row: any) => {
-            processedIds.push(row.id.toString()); // Almacenar IDs procesados
-            return header.map((fieldName: any) => JSON.stringify(row[fieldName], replacer)).join(',');
+        ...originalIds.map(id => {
+            const entry = data[id];
+            const item = entry.item;
+            const fields = item.fields;
+
+            // Construir cada fila del CSV usando las equivalencias
+            return header.map(columnName => {
+                const jsonFieldName = jsonToCsvEquivalences[columnName];
+                return JSON.stringify(fields[jsonFieldName] || '', replacer);
+            }).join(',');
         })
     ].join('\r\n');
-
-    // Verificar si todos los IDs han sido procesados
-    const missingIds = originalIds.filter(id => !processedIds.includes(id));
-    if (missingIds.length > 0) {
-        console.warn(`IDs faltantes: ${missingIds.join(', ')}`);
-    } else {
-        console.log("Todos los IDs han sido procesados correctamente.");
-    }
 
     return csv;
 }
@@ -223,12 +251,8 @@ function convertJsonFileToCsv(inputFilePath: string, outputFilePath: string) {
 const inputFilePath = path.join(__dirname, 'projectblogs', 'detailedData.json');
 const outputFilePath = path.join(__dirname, 'projectblogs', 'detailedData.csv');
 
-// Convertir y guardar
-convertJsonFileToCsv(inputFilePath, outputFilePath);
-
-
 // fetchAndSaveData();
-
+// getIdsFromDataFile(path.join(__dirname, 'projectblogs', 'data.json'));
 // processAndSaveDetailedData();
-
+// convertJsonFileToCsv(inputFilePath, outputFilePath);
 // compareDetailedDataWithXml().catch(error => console.error('Error:', error));
