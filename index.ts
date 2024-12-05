@@ -54,7 +54,6 @@ function getIdsFromDataFile(filePath: string): number[] {
     const idsFilePath = path.join(path.dirname(filePath), 'ids.json');
     fs.writeFileSync(idsFilePath, JSON.stringify(ids, null, 2));
     console.log(`IDs guardados exitosamente en ${idsFilePath}`);
-    console.log(ids);
 
     return ids;
 }
@@ -201,22 +200,31 @@ async function compareDetailedDataWithXml() {
     compareJsonObjects(detailedData, xmlData);
 }
 
-const jsonToCsvEquivalences: Record<string, string> = {
+const jsonToSolve360CsvEquivalences: Record<string, string> = {
     "ID": "id",
     "Nom du projet": "title",
-    "Date de creation": "custom11536902",
+    "Date de creation": "created",
+    "Updated": "updated",
+    "Created by": "creatorname",
+    "Updated by": "modificatorname",
+    "Assigned To": "assignedto_cn",
     "Type de Projet": "custom11546881",
     "Sous type": "custom11536909",
     "Description": "description",
-    "Assigned To": "assignedto_cn",
+    "Owner": "ownership",
     // Añade más equivalencias según sea necesario
 };
+
+const jsonToHubspotCsvEquivalences: Record<string, string> = {
+    "ID": "id",
+    "Nom du projet": "title",
+}
 
 function jsonToCsv(jsonData: string) {
     const data = JSON.parse(jsonData);
     const originalIds = Object.keys(data);
 
-    const header = Object.keys(jsonToCsvEquivalences);
+    const header = Object.keys(jsonToSolve360CsvEquivalences);
 
     const csv = [
         header.join(','), // Encabezados
@@ -227,7 +235,7 @@ function jsonToCsv(jsonData: string) {
 
             // Construir cada fila del CSV usando las equivalencias
             return header.map(columnName => {
-                const jsonFieldName = jsonToCsvEquivalences[columnName];
+                const jsonFieldName = jsonToSolve360CsvEquivalences[columnName];
                 return JSON.stringify(fields[jsonFieldName] || '', replacer);
             }).join(',');
         })
@@ -247,12 +255,115 @@ function convertJsonFileToCsv(inputFilePath: string, outputFilePath: string) {
     console.log(`Datos convertidos y guardados en ${outputFilePath}`);
 }
 
-// Ruta de los archivos
-const inputFilePath = path.join(__dirname, 'projectblogs', 'detailedData.json');
-const outputFilePath = path.join(__dirname, 'projectblogs', 'detailedData.csv');
+function divideByLanguage() {
+    // Ruta del archivo JSON original
+    const inputFilePath = path.join(__dirname, 'projectblogs', 'detailedData.json');
+
+    // Directorio donde se guardarán los archivos separados por idioma
+    const outputDir = path.join(__dirname, 'projectblogsByLanguage');
+
+    // Asegúrate de que el directorio de salida existe
+    if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir);
+    }
+
+    // Leer el archivo JSON
+    fs.readFile(inputFilePath, 'utf8', (err, data) => {
+        if (err) {
+            console.error('Error al leer el archivo:', err);
+            return;
+        }
+
+        // Validar que el JSON no esté vacío
+        if (!data) {
+            console.error('El archivo JSON está vacío.');
+            return;
+        }
+
+        // Parsear el JSON
+        let jsonData;
+        try {
+            jsonData = JSON.parse(data);
+        } catch (parseError) {
+            console.error('Error al parsear el JSON:', parseError);
+            return;
+        }
+
+        // Diccionarios para almacenar los datos separados por idioma
+        const languageProjects: { [key: string]: any[] } = {
+            "Belgium": [],
+            "English": [],
+            "French": [],
+            "German": [],
+            "International": [],
+            "Italian": [],
+            "Portuguese": [],
+            "Spanish": [],
+            "Multilingual": [],
+            "NoLanguageTag": []
+        };
+
+        // Iterar sobre los datos
+        for (const itemId in jsonData) {
+            if (jsonData.hasOwnProperty(itemId)) {
+                const itemData = jsonData[itemId];
+                const categories = itemData.categories || [];
+
+                // Obtener los idiomas del proyecto
+                const idiomas = categories.map((cat: any) => cat.name);
+
+                // Verificar si el proyecto tiene múltiples idiomas
+                if (idiomas.length > 1) {
+                    languageProjects["Multilingual"].push(itemData);
+                } else if (idiomas.includes('1-Belgium')) {
+                    languageProjects["Belgium"].push(itemData);
+                } else if (idiomas.includes('1-English Speaking')) {
+                    languageProjects["English"].push(itemData);
+                } else if (idiomas.includes('1-French Speaking')) {
+                    languageProjects["French"].push(itemData);
+                } else if (idiomas.includes('1-German Speaking')) {
+                    languageProjects["German"].push(itemData);
+                } else if (idiomas.includes('1-International')) {
+                    languageProjects["International"].push(itemData);
+                } else if (idiomas.includes('1-Italian Speaking')) {
+                    languageProjects["Italian"].push(itemData);
+                } else if (idiomas.includes('1-Portuguese Speaking')) {
+                    languageProjects["Portuguese"].push(itemData);
+                } else if (idiomas.includes('1-Spanish Speaking')) {
+                    languageProjects["Spanish"].push(itemData);
+                } else {
+                    languageProjects["NoLanguageTag"].push(itemData);
+                }
+            }
+        }
+
+        // Mostrar un resumen de los datos antes de escribirlos
+        console.log('Resumen de proyectos por idioma:');
+        Object.entries(languageProjects).forEach(([language, projects]) => {
+            console.log(`- ${language}: ${projects.length} proyectos`);
+        });
+
+        // Función para escribir los datos en un archivo
+        const writeToFile = (filename: string, data: any) => {
+            fs.writeFile(path.join(outputDir, filename), JSON.stringify(data, null, 2), 'utf8', (err) => {
+                if (err) {
+                    console.error(`Error al escribir el archivo ${filename}:`, err);
+                } else {
+                    console.log(`Archivo ${filename} escrito correctamente.`);
+                }
+            });
+        };
+
+        // Escribir los datos en archivos separados
+        for (const [language, projects] of Object.entries(languageProjects)) {
+            writeToFile(`${language.toLowerCase()}.json`, projects);
+        }
+    });
+}
 
 // fetchAndSaveData();
 // getIdsFromDataFile(path.join(__dirname, 'projectblogs', 'data.json'));
 // processAndSaveDetailedData();
 // convertJsonFileToCsv(inputFilePath, outputFilePath);
 // compareDetailedDataWithXml().catch(error => console.error('Error:', error));
+divideByLanguage();
